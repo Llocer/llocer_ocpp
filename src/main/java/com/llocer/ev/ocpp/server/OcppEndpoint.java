@@ -25,7 +25,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.llocer.common.Log;
-import com.llocer.ev.ocpp.msgs20.OcppTransactionEventRequest;
 import com.llocer.ev.ocpp.server.OcppMsg.CallError;
 import com.llocer.ev.ocpp.server.OcppMsg.CallResult;
 import com.llocer.ev.ocpp.server.OcppMsg.OcppErrorCode;
@@ -53,7 +52,7 @@ public class OcppEndpoint {
 
 		@Override
 		public void run() {
-//			Log.debug( "WebSocketEndPoint.Controller running." );
+//			Log.debug( "OcppEndpoint.Controller running." );
 			
 			try {
 				if( wsep.waitingMsg != null && wsep.waitingTimestamp + config.maxMessageWaitingInterval < System.currentTimeMillis() ) {
@@ -214,17 +213,18 @@ public class OcppEndpoint {
 			}
 			
 			String csId  = session.getRequestParameterMap().get("csId").get(0);
-			Log.debug( "WebSocketEndPoint.onOpen: csId=%s", csId );
+			Log.debug( "OcppEndpoint.onOpen: csId=%s", csId );
 
 			this.session = session;
 			
 			this.agent = agents.get( csId );
 			if( this.agent == null ) {
+				Log.debug( "OcppEndpoint.onOpen: unknown agentId = %s", csId );
 				session.close();
 				return;
 			}
 			this.agent.onOcppEndpointConnected( this );
-			Log.debug( "WebSocketEndPoint.onOpen: done." );
+			Log.debug( "OcppEndpoint.onOpen: done." );
 		
 		} catch( Exception e ) {
 			Log.error( e );
@@ -234,7 +234,7 @@ public class OcppEndpoint {
     
 	@OnMessage
 	public void onMessage( OcppMsg msg, Session session ) {
-		Log.debug( "WebSocketEndPoint.onMessage ..." );
+		Log.debug( "OcppEndpoint.onMessage ..." );
 		
 		synchronized( this.outQueue ) {
 			this.handlingMsg = true;
@@ -278,11 +278,14 @@ public class OcppEndpoint {
     
     @OnClose
     public void onClose(Session session, CloseReason closeReason ) {
-    	//    	Log.debug( "WebSocketEndPoint.onClose" );
+    	//    	Log.debug( "OcppEndpoint.onClose" );
 		this.controller.cancel( true );
 		this.controller = null;
     	this.session = null;
-    	this.agent.onOcppEndpointConnected( null );
+    	
+    	if( this.agent != null ) {
+    		this.agent.onOcppEndpointConnected( null );
+    	}
 
     	synchronized( this.outQueue ) {
     		if( this.waitingMsg != null ) {
@@ -290,12 +293,14 @@ public class OcppEndpoint {
     			this.waitingMsg = null;
     		}
     		
-    		for( OcppCommand msg : this.outQueue ) {
-    			try {
-					this.agent.onOcppCallError( msg );
-				} catch (Exception exc) {
-					Log.error(exc);
-				}
+    		if( this.agent != null ) {
+    			for( OcppCommand msg : this.outQueue ) {
+    				try {
+    					this.agent.onOcppCallError( msg );
+    				} catch (Exception exc) {
+    					Log.error(exc);
+    				}
+    			}
     		}
     		
     		this.outQueue.clear();
@@ -306,7 +311,7 @@ public class OcppEndpoint {
      * message handlers
      */
     
-	private static CallError makeCallError( String messageId, OcppError error ) {
+	private static CallError makeCallError( String messageId, OcppErrorItf error ) {
 		CallError res = new CallError();
 	    res.messageId = messageId;
 	    res.errorCode = error.getErrorCode();
@@ -315,44 +320,21 @@ public class OcppEndpoint {
 	    return res;
 	}
     
-    private static boolean validateIncomingMessage(  OcppAction action, Object payload ) {
-    	switch( action ) {
-    	case TransactionEvent: {
-    		OcppTransactionEventRequest tpayload = (OcppTransactionEventRequest)payload;
-    		if( tpayload.getTransactionInfo() == null ) return false;
-    		if( tpayload.getTransactionInfo().getTransactionId() == null ) return false;
-    		return true;
-    	}
-
-    	default:
-    		return true;
-    	}
-    }
-
-    private static boolean validateResult( OcppAction action, Object payload  ) {
-    	return true;
-    }
-   
     private OcppMsg handleCallMessage( OcppMsg.Call msg ) throws Exception {
-    	Log.debug( "WebSocketEndPoint.onMessage: %s", msg.action );
-
-    	if( !validateIncomingMessage( msg.action, msg.payload ) ) {
-    		return makeCallError( msg.messageId, OcppErrorEnum.PropertyConstraintViolation );
-
-    	} 
+    	Log.debug( "OcppEndpoint.onMessage: %s", msg.action );
 
     	try {
-    		Object answerPayload = agent.onOcppCall( msg.action, msg.payload );
+    		Object answer = agent.onOcppCall( msg.action, msg.payload );
 
-    		if( answerPayload instanceof OcppError ) {
+    		if( answer instanceof OcppErrorItf ) {
     			
-    			return makeCallError( msg.messageId, (OcppError)answerPayload );
+    			return makeCallError( msg.messageId, (OcppErrorItf)answer );
 
     		} 
 
 			CallResult res = new CallResult();
 		    res.messageId = msg.messageId;
-		    res.payload = answerPayload;
+		    res.payload = answer;
 		    return res;
 
     	} catch( OcppException exc ) {
@@ -372,13 +354,13 @@ public class OcppEndpoint {
 		
 		msg.payload = command.request.action.decodeResponse( (JsonNode) msg.payload );
 		
-    	if( !validateResult( command.request.action, msg.payload ) ) {
-    		Log.warning( "Invalid incoming CallResult %s: %s", command.request.action, msg.payload );
-    		return;
-    	}
-		
 		command.answer = msg.payload;
 		agent.onOcppCallResult( command );
+		
+		if( command.callback != null ) {
+			command.callback.accept( command );
+		}
+
 	}
 
 	private void handleCallErrorMessage( OcppMsg.CallError msg ) throws Exception {
@@ -394,5 +376,10 @@ public class OcppEndpoint {
 		
 		command.error = msg;
 		agent.onOcppCallResult( command );
+		
+		if( command.callback != null ) {
+			command.callback.accept( command );
+		}
+
 	}
 }

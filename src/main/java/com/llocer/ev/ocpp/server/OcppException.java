@@ -16,7 +16,7 @@ public class OcppException extends Exception {
 		this.errorDetails = errorDetails;
 	}
 	
-	public OcppException( OcppError error ) {
+	public OcppException( OcppErrorItf error ) {
 		this( error.getErrorCode(), error.getErrorDescription(), null );
 	}
 	

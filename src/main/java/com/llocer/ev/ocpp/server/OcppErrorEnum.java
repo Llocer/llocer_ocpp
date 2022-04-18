@@ -2,7 +2,7 @@ package com.llocer.ev.ocpp.server;
 
 import com.llocer.ev.ocpp.server.OcppMsg.OcppErrorCode;
 
-enum OcppErrorEnum implements OcppError{
+enum OcppErrorEnum implements OcppErrorItf{
 	Timeout( OcppErrorCode.GenericError,  "Timeout" ),
 	PropertyConstraintViolation( OcppErrorCode.PropertyConstraintViolation, "Property constraint violation" ),
 	Internal( OcppErrorCode.InternalError, "Internal error" );
